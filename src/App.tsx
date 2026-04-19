@@ -724,6 +724,7 @@ export default function App() {
       rafRef.current = requestAnimationFrame(gameLoop);
       return () => stopLoop();
     }
+    return undefined;
   }, [screen, gameLoop, stopLoop]);
 
   // Keyboard listeners
