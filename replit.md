@@ -25,3 +25,12 @@ pnpm workspace monorepo using TypeScript. Each package manages its own dependenc
 - `pnpm --filter @workspace/api-server run dev` — run API server locally
 
 See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
+
+## Artifacts
+
+### NECRO SURVIVOR (`artifacts/necro-survivor`)
+- **Kind**: react-vite web app
+- **Preview path**: `/`
+- **Description**: A gothic canvas-based survival game. Player is a necromancer who commands skeleton minions that auto-attack enemies. Features: 3 enemy types (zombie, bat, ghost), XP orbs, leveling system, 9 upgrade options, difficulty scaling every minute, high score persistence via localStorage.
+- **No backend** — pure frontend canvas game using React + requestAnimationFrame loop
+- **Key files**: `src/App.tsx` (entire game logic), `src/game.css` (gothic styling)
