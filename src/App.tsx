@@ -42,7 +42,7 @@ interface Enemy {
   maxHp: number;
   speed: number;
   xp: number;
-  type: "zombie" | "bat" | "ghost";
+  type: "zombie" | "bat" | "ghost" | "vampire";
   poisonTimer: number;
 }
 
@@ -146,15 +146,17 @@ function spawnEnemy(state: GameState): Enemy {
   let ey = CANVAS_HEIGHT / 2 + Math.sin(angle) * (CANVAS_HEIGHT / 2 + margin);
 
   const rand = Math.random();
-  let type: "zombie" | "bat" | "ghost";
+  let type: "zombie" | "bat" | "ghost" | "vampire";
   if (rand < 0.5) type = "zombie";
   else if (rand < 0.8) type = "bat";
-  else type = "ghost";
+  else if (rand < 0.95) type = "ghost";
+  else type = "vampire";
 
   const configs = {
     zombie: { radius: 16, hp: 3, speed: 1.2, xp: 10 },
     bat: { radius: 10, hp: 1, speed: 2.5, xp: 5 },
     ghost: { radius: 14, hp: 2, speed: 1.8, xp: 8 },
+    vampire: { radius: 18, hp: 4, speed: 2.0, xp: 15 },
   };
 
   const cfg = configs[type];
@@ -557,8 +559,8 @@ export default function App() {
 
     // Enemies
     for (const e of s.enemies) {
-      const colors = { zombie: "#27ae60", bat: "#8e44ad", ghost: "rgba(180,180,255,0.7)" };
-      const strokeColors = { zombie: "#2ecc71", bat: "#9b59b6", ghost: "rgba(200,200,255,0.9)" };
+      const colors = { zombie: "#27ae60", bat: "#8e44ad", ghost: "rgba(180,180,255,0.7)", vampire: "#c0392b" };
+      const strokeColors = { zombie: "#2ecc71", bat: "#9b59b6", ghost: "rgba(200,200,255,0.9)", vampire: "#e74c3c" };
       ctx.fillStyle = colors[e.type];
       ctx.strokeStyle = strokeColors[e.type];
       ctx.lineWidth = 2;
