@@ -4,6 +4,31 @@ import "./game.css";
 const CANVAS_WIDTH = 900;
 const CANVAS_HEIGHT = 600;
 const TARGET_FPS = 60;
+const HOTBAR_KEYS = ["KeyI", "KeyO", "KeyP", "BracketLeft", "BracketRight"];
+const HOTBAR_LABELS = ["I", "O", "P", "[", "]"];
+const ABILITY_LABELS: Record<string, string> = {
+  dash: "Dash",
+  summon_skeleton: "Summon",
+  rapid_fire_ability: "RapidFire",
+  heal: "Heal",
+  boost: "Boost"
+};
+
+// Add roundRect helper method
+CanvasRenderingContext2D.prototype.roundRect = function(x, y, w, h, r) {
+  if (w < 2 * r) r = w / 2;
+  if (h < 2 * r) r = h / 2;
+  this.moveTo(x+r, y);
+  this.lineTo(x+w-r, y);
+  this.quadraticCurveTo(x+w, y, x+w, y+r);
+  this.lineTo(x+w, y+h-r);
+  this.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+  this.lineTo(x+r, y+h);
+  this.quadraticCurveTo(x, y+h, x, y+h-r);
+  this.lineTo(x, y+r);
+  this.quadraticCurveTo(x, y, x+r, y);
+  return this;
+};
 
 interface Player {
   x: number;
@@ -13,13 +38,18 @@ interface Player {
   maxHp: number;
   speed: number;
   invincibleFrames: number;
+  mana: number;
+  maxMana: number;
+  dashFrames: number;
 }
 
 interface Skeleton {
   x: number;
   y: number;
+  radius: number;
   attackCooldown: number;
   attackDelay: number;
+  stationary?: boolean;
 }
 
 interface Projectile {
@@ -30,7 +60,17 @@ interface Projectile {
   damage: number;
   pierce: number;
   radius: number;
+  color: string;
+  owner: "player" | "enemy";
   hitEnemies: Set<number>;
+}
+
+interface EnemyProjectileConfig {
+  speed: number;
+  radius: number;
+  damage: number;
+  frequency: number; // shots per second
+  color: string;
 }
 
 interface Enemy {
@@ -42,8 +82,14 @@ interface Enemy {
   maxHp: number;
   speed: number;
   xp: number;
-  type: "zombie" | "bat" | "ghost" | "vampire";
+  type: "zombie" | "bat" | "ghost" | "vampire" | "silverfish" | "wizard" | "slime" | "phantom" | "revenant" | "giant" | "dragon";
   poisonTimer: number;
+  attackCooldown: number;
+  attackDelay: number;
+  projectileConfig?: EnemyProjectileConfig;
+  multiplyCooldown?: number;
+  multiplyQuantity?: number;
+  multiplyFrequency?: number;
 }
 
 interface XpOrb {
@@ -56,6 +102,7 @@ interface XpOrb {
 interface GameState {
   player: Player;
   skeletons: Skeleton[];
+  summonedSkeletons: Skeleton[];
   maxSkeletons: number;
   projectiles: Projectile[];
   enemies: Enemy[];
@@ -74,6 +121,15 @@ interface GameState {
   speedMultiplier: number;
   hasPoisonAura: number;
   critChance: number;
+  hasDash: boolean;
+  hasSkeletonSummon: boolean;
+  hasRapidFire: boolean;
+  hasHeal: boolean;
+  hasBoost: boolean;
+  boostActive: boolean;
+  boostTimer: number;
+  originalSummonedDamage: number;
+  originalSummonedDelay: number;
   spawnAccumulator: number;
   gameOver: boolean;
   paused: boolean;
@@ -88,13 +144,18 @@ interface UpgradeOption {
 const UPGRADES: UpgradeOption[] = [
   { key: "more_skeletons", name: "More Skeletons", description: "+1 skeleton minion (max 5)" },
   { key: "skeleton_damage", name: "Skeleton Damage", description: "+25% projectile damage" },
-  { key: "rapid_fire", name: "Rapid Fire", description: "-15% skeleton attack cooldown" },
+  { key: "rapid_fire_cooldown", name: "Rapid Fire", description: "-15% skeleton attack cooldown" },
   { key: "piercing_shots", name: "Piercing Shots", description: "+1 pierce per projectile" },
   { key: "life_leech", name: "Life Leech", description: "Heal 1 HP per 10 kills" },
   { key: "fleet_foot", name: "Fleet Foot", description: "+15% movement speed" },
   { key: "poison_aura", name: "Poison Aura", description: "1 damage/sec to nearby enemies (r=70)" },
   { key: "tank", name: "Tank", description: "+3 max HP and heal 3" },
   { key: "crit_chance", name: "Crit Chance", description: "15% chance for double damage" },
+  { key: "dash", name: "Dash", description: "Unlock dash in the hotbar; press its assigned slot key to dash forward (costs 10 mana)" },
+  { key: "skeleton_summon", name: "Skeleton Summon", description: "Spawn a stationary skeleton for 75 MP that shoots nearest enemies" },
+  { key: "rapid_fire_ability", name: "Rapid Fire Ability", description: "Burst shot: 3 volleys of 8 bullets in all directions (costs 10 mana)" },
+  { key: "heal", name: "Heal", description: "Heal 1 HP for 5 MP (unlocks heal ability)" },
+  { key: "boost", name: "Boost", description: "Temporarily increase summoned damage and firerate by 50% for 5 seconds (costs 20 mana)" }
 ];
 
 function xpForLevel(level: number): number {
@@ -111,10 +172,14 @@ function createGameState(): GameState {
       maxHp: 10,
       speed: 5,
       invincibleFrames: 0,
+      mana: 100,
+      maxMana: 100,
+      dashFrames: 0,
     },
     skeletons: [
-      { x: CANVAS_WIDTH / 2 + 30, y: CANVAS_HEIGHT / 2, attackCooldown: 0, attackDelay: 30 },
+      { x: CANVAS_WIDTH / 2 + 30, y: CANVAS_HEIGHT / 2, radius: 10, attackCooldown: 0, attackDelay: 30 },
     ],
+    summonedSkeletons: [],
     maxSkeletons: 1,
     projectiles: [],
     enemies: [],
@@ -133,10 +198,155 @@ function createGameState(): GameState {
     speedMultiplier: 1,
     hasPoisonAura: 0,
     critChance: 0,
+    hasDash: false,
+    hasSkeletonSummon: false,
+    hasRapidFire: false,
+    hasHeal: false,
+    hasBoost: false,
+    boostActive: false,
+    boostTimer: 0,
+    originalSummonedDamage: 1,
+    originalSummonedDelay: 30,
     spawnAccumulator: 0,
     gameOver: false,
     paused: false,
   };
+}
+
+// Enemy spawn rates (out of 100)
+const ENEMY_SPAWN_RATES = {
+  zombie: 29,   // 30% chance
+  bat: 15,      // 15% chance
+  ghost: 15,    // 15% chance
+  vampire: 10,  // 10% chance
+  silverfish: 5, // 5% chance
+  wizard: 5,    // 5% chance
+  slime: 5,     // 5% chance
+  phantom: 5,   // 5% chance 
+  revenant: 5,  // 5% chance
+  giant: 5,    // 5% chance
+  dragon: 1,   // 1% chance
+};
+
+const ENEMY_CONFIGS: Record<Enemy["type"], {
+  radius: number;
+  hp: number;
+  speed: number;
+  xp: number;
+  killRequirement?: number;
+  projectileConfig?: EnemyProjectileConfig;
+}> = {
+  zombie: { radius: 16, hp: 4, speed: 1.2, xp: 12 },
+  bat: { radius: 10, hp: 2, speed: 2.5, xp: 8 },
+  ghost: { radius: 14, hp: 3, speed: 1.8, xp: 10 },
+  vampire: { radius: 18, hp: 5, speed: 2.0, xp: 20 },
+  silverfish: { radius: 8, hp: 1, speed: 3.5, xp: 8 },
+  wizard: {
+    radius: 15,
+    hp: 6,
+    speed: 1.1,
+    xp: 25,
+    killRequirement: 50, // Only spawn after 500 kills
+    projectileConfig: {
+      speed: 1,
+      radius: 15,
+      damage: 4,
+      frequency: 0.4,
+      color: "#cf2577",
+    },
+  },
+  slime: {
+    radius: 14,
+    hp: 3,
+    speed: 1.0,
+    xp: 12,
+    killRequirement: 50 // Spawn after 200 kills
+  },
+  phantom: {
+    radius: 12,
+    hp: 4,
+    speed: 1.0,
+    xp: 15,
+    killRequirement: 150, // Spawn after 300 kills
+    projectileConfig: {
+      speed: 5,
+      radius: 3,
+      damage: 0.5,
+      frequency: 5,
+      color: "#386d70"
+    }
+  },
+  revenant: {
+    radius: 18,
+    hp: 6,
+    speed: 0.4,
+    xp: 40,
+    killRequirement: 120, // Spawn after 1000 kills
+    projectileConfig: {
+      speed: 0.2,
+      radius: 25,
+      damage: 7,
+      frequency: 0.1,
+      color: "#080864"
+    }
+  },
+  giant: {
+    radius: 30,
+    hp: 12,
+    speed: 0.2,
+    xp: 60,
+    killRequirement: 150 // Spawn after 1500 kills
+  },
+  dragon: {
+    radius: 65,
+    hp: 55,
+    speed: 0.5,
+    xp: 150,
+    killRequirement: 350,
+    projectileConfig: {
+      speed: 0.3,
+      radius: 55,
+      damage: 15,
+      frequency: 0.1,
+      color: "#e74c3c"
+    }
+  }
+
+};
+
+//Helper function to calculate total spawn rate for normalization
+
+function getTotalSpawnRate(): number {
+  return ENEMY_SPAWN_RATES.zombie + ENEMY_SPAWN_RATES.bat + ENEMY_SPAWN_RATES.ghost + ENEMY_SPAWN_RATES.vampire + ENEMY_SPAWN_RATES.silverfish + ENEMY_SPAWN_RATES.wizard + ENEMY_SPAWN_RATES.slime + ENEMY_SPAWN_RATES.phantom + ENEMY_SPAWN_RATES.revenant + ENEMY_SPAWN_RATES.giant;
+}
+
+function getRandomEnemyType(kills: number):
+  "zombie" | "bat" | "ghost" | "vampire" | "silverfish" | "wizard" | "slime" | "phantom" | "revenant" | "giant" | "dragon" {
+
+  // Filter available enemies based on kill requirement
+  const availableEnemies = Object.entries(ENEMY_SPAWN_RATES)
+    .filter(([type]) => {
+      const config = ENEMY_CONFIGS[type as Enemy["type"]];
+      return !config.killRequirement || kills >= config.killRequirement;
+    })
+    .map(([type, rate]) => ({ type: type as Enemy["type"], rate }));
+
+  // Calculate total rate of available enemies
+  const total = availableEnemies.reduce((sum, e) => sum + e.rate, 0);
+
+  // Get random number between 0 and total
+  let rand = Math.random() * total;
+
+  // Select enemy based on weighted probability
+  for (const enemy of availableEnemies) {
+    if (rand < enemy.rate) {
+      return enemy.type;
+    }
+    rand -= enemy.rate;
+  }
+
+  // Fallback
+  return "zombie";
 }
 
 function spawnEnemy(state: GameState): Enemy {
@@ -145,33 +355,38 @@ function spawnEnemy(state: GameState): Enemy {
   let ex = CANVAS_WIDTH / 2 + Math.cos(angle) * (CANVAS_WIDTH / 2 + margin);
   let ey = CANVAS_HEIGHT / 2 + Math.sin(angle) * (CANVAS_HEIGHT / 2 + margin);
 
-  const rand = Math.random();
-  let type: "zombie" | "bat" | "ghost" | "vampire";
-  if (rand < 0.5) type = "zombie";
-  else if (rand < 0.8) type = "bat";
-  else if (rand < 0.95) type = "ghost";
-  else type = "vampire";
+  const type = getRandomEnemyType(state.kills);
 
-  const configs = {
-    zombie: { radius: 16, hp: 3, speed: 1.2, xp: 10 },
-    bat: { radius: 10, hp: 1, speed: 2.5, xp: 5 },
-    ghost: { radius: 14, hp: 2, speed: 1.8, xp: 8 },
-    vampire: { radius: 18, hp: 4, speed: 2.0, xp: 15 },
-  };
+  const cfg = ENEMY_CONFIGS[type]; // Use ENEMY_CONFIGS instead of configs
+  const attackDelay = cfg.projectileConfig ? Math.max(10, Math.round(TARGET_FPS / cfg.projectileConfig.frequency)) : 0;
 
-  const cfg = configs[type];
-  return {
+  // HP scaling: +2 per 50 kills, +5 per 500 kills
+  const hpScaling = Math.floor(state.kills / 50) * 2 + Math.floor(state.kills / 500) * 5;
+  const scaledHp = cfg.hp + hpScaling;
+
+  const enemy: Enemy = {
     id: state.enemyIdCounter++,
     x: ex,
     y: ey,
     type,
     radius: cfg.radius,
-    hp: cfg.hp,
-    maxHp: cfg.hp,
+    hp: scaledHp,
+    maxHp: scaledHp,
     speed: cfg.speed,
     xp: cfg.xp,
     poisonTimer: 0,
+    attackCooldown: 0,
+    attackDelay,
+    projectileConfig: cfg.projectileConfig,
   };
+
+  if (type === "slime") {
+    enemy.multiplyCooldown = 0;
+    enemy.multiplyQuantity = 2;
+    enemy.multiplyFrequency = 3;
+  }
+
+  return enemy;
 }
 
 function getSkeletonOffsets(count: number): { dx: number; dy: number }[] {
@@ -200,6 +415,11 @@ function pickThreeUpgrades(state: GameState): UpgradeOption[] {
   const available = UPGRADES.filter((u) => {
     if (u.key === "more_skeletons" && state.maxSkeletons >= 5) return false;
     if (u.key === "poison_aura" && state.hasPoisonAura > 0) return false;
+    if (u.key === "dash" && state.hasDash) return false;
+    if (u.key === "skeleton_summon" && state.hasSkeletonSummon) return false;
+    if (u.key === "rapid_fire_ability" && state.hasRapidFire) return false;
+    if (u.key === "heal" && state.hasHeal) return false;
+    if (u.key === "boost" && state.hasBoost) return false;
     if (u.key === "life_leech" && state.kills === 0 && state.level < 3) return false;
     return true;
   });
@@ -221,6 +441,7 @@ export default function App() {
   const [upgradeChoices, setUpgradeChoices] = useState<UpgradeOption[]>([]);
   const [finalTime, setFinalTime] = useState(0);
   const [highScore, setHighScore] = useState(highScoreRef.current);
+  const [abilities, setAbilities] = useState<string[]>([]);
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60).toString().padStart(2, "0");
@@ -246,6 +467,7 @@ export default function App() {
           s.skeletons.push({
             x: s.player.x + newOffset.dx,
             y: s.player.y + newOffset.dy,
+            radius: 10,
             attackCooldown: 0,
             attackDelay: Math.round(30 * s.attackCooldownMultiplier),
           });
@@ -254,7 +476,7 @@ export default function App() {
       case "skeleton_damage":
         s.skeletonDamageBonus += 0.25;
         break;
-      case "rapid_fire":
+      case "rapid_fire_cooldown":
         s.attackCooldownMultiplier = Math.max(0.1, s.attackCooldownMultiplier * 0.85);
         s.skeletons.forEach((sk) => {
           sk.attackDelay = Math.round(30 * s.attackCooldownMultiplier);
@@ -279,6 +501,26 @@ export default function App() {
         break;
       case "crit_chance":
         s.critChance = Math.min(1, s.critChance + 0.15);
+        break;
+      case "dash":
+        s.hasDash = true;
+        setAbilities(prev => [...prev, "dash"]);
+        break;
+      case "skeleton_summon":
+        s.hasSkeletonSummon = true;
+        setAbilities(prev => [...prev, "summon_skeleton"]);
+        break;
+      case "rapid_fire_ability":
+        s.hasRapidFire = true;
+        setAbilities(prev => [...prev, "rapid_fire_ability"]);
+        break;
+      case "heal":
+        s.hasHeal = true;
+        setAbilities(prev => [...prev, "heal"]);
+        break;
+      case "boost":
+        s.hasBoost = true;
+        setAbilities(prev => [...prev, "boost"]);
         break;
     }
     s.paused = false;
@@ -324,27 +566,118 @@ export default function App() {
     const len = Math.sqrt(vx * vx + vy * vy);
     if (len > 0) { vx /= len; vy /= len; }
 
-    // — Player movement —
-    s.player.x = Math.max(s.player.radius, Math.min(CANVAS_WIDTH - s.player.radius,
-      s.player.x + vx * s.player.speed * dtFactor));
-    s.player.y = Math.max(s.player.radius, Math.min(CANVAS_HEIGHT - s.player.radius,
-      s.player.y + vy * s.player.speed * dtFactor));
+    // Handle hotbar ability activation
+    for (let abilityIndex = 0; abilityIndex < abilities.length; abilityIndex++) {
+      const abilityName = abilities[abilityIndex];
+      const keyCode = HOTBAR_KEYS[abilityIndex];
+      if (!keyCode || !keys.has(keyCode)) continue;
 
+      if (abilityName === "dash" && s.hasDash) {
+        if (s.player.mana >= 10) {
+          s.player.mana -= 10;
+          s.player.dashFrames = 10; // Dash for 10 frames
+          s.player.invincibleFrames = Math.max(s.player.invincibleFrames, 10);
+        }
+        keys.delete(keyCode);
+      }
+
+      if (abilityName === "summon_skeleton" && s.hasSkeletonSummon) {
+        if (s.player.mana >= 75) {
+          s.player.mana -= 75;
+          s.summonedSkeletons.push({
+            x: s.player.x,
+            y: s.player.y,
+            radius: 10,
+            attackCooldown: 0,
+            attackDelay: 30,
+            stationary: true,
+          });
+        }
+        keys.delete(keyCode);
+      }
+
+      if (abilityName === "rapid_fire_ability" && s.hasRapidFire) {
+        if (s.player.mana >= 10) {
+          s.player.mana -= 10;
+          const spd = 8;
+          const baseDamage = 1; // Regular player projectile damage
+          let damage = baseDamage;
+          if (Math.random() < s.critChance) damage *= 2.5; // Rapid fire shots have higher crit multiplier
+
+          // Shoot 3 volleys of 8 bullets in all directions
+          for (let volley = 0; volley < 3; volley++) {
+            for (let dir = 0; dir < 8; dir++) {
+              const angle = (dir / 8) * Math.PI * 2;
+              s.projectiles.push({
+                x: s.player.x,
+                y: s.player.y,
+                vx: Math.cos(angle) * spd,
+                vy: Math.sin(angle) * spd,
+                damage,
+                pierce: s.pierceBonus,
+                radius: 4,
+                color: "#f39c12",
+                owner: "player",
+                hitEnemies: new Set(),
+              });
+            }
+          }
+        }
+        keys.delete(keyCode);
+      }
+
+      if (abilityName === "heal" && s.hasHeal) {
+        if (s.player.mana >= 5) {
+          s.player.mana -= 5;
+          s.player.hp = Math.min(s.player.maxHp, s.player.hp + 1);
+        }
+        keys.delete(keyCode);
+      }
+
+      if (abilityName === "boost" && s.hasBoost) {
+        if (s.player.mana >= 20 && !s.boostActive) {
+          s.player.mana -= 20;
+          s.boostActive = true;
+          s.boostTimer = 5.0;
+
+          //store original values to revert back after boost ends
+          s.originalSummonedDamage = (1 + s.skeletonDamageBonus);
+          s.originalSummonedDelay = 30;
+
+          //Apply boost to all existing summoned skeletons
+          s.summonedSkeletons.forEach(sk => {
+            sk.attackDelay = Math.round(s.originalSummonedDelay * 0.67); // 50% faster attack speed
+          });
+        }
+        keys.delete(keyCode);
+      }
+    }
+
+    // — Player movement —
+    const currentSpeed = s.player.dashFrames > 0 ? s.player.speed * 3 : s.player.speed;
+    s.player.x = Math.max(s.player.radius, Math.min(CANVAS_WIDTH - s.player.radius,
+      s.player.x + vx * currentSpeed * dtFactor));
+    s.player.y = Math.max(s.player.radius, Math.min(CANVAS_HEIGHT - s.player.radius,
+      s.player.y + vy * currentSpeed * dtFactor));
+
+    if (s.player.dashFrames > 0) s.player.dashFrames -= dtFactor;
     if (s.player.invincibleFrames > 0) s.player.invincibleFrames -= dtFactor;
 
-    // — Update skeletons —
+    // — Update normal skeletons —
     const skOffsets = getSkeletonOffsets(s.skeletons.length);
     s.skeletons.forEach((sk, i) => {
-      const target = {
-        x: s.player.x + skOffsets[i].dx,
-        y: s.player.y + skOffsets[i].dy,
-      };
-      const dx = target.x - sk.x;
-      const dy = target.y - sk.y;
-      const d = Math.sqrt(dx * dx + dy * dy);
-      if (d > 2) {
-        sk.x += (dx / d) * 4 * dtFactor;
-        sk.y += (dy / d) * 4 * dtFactor;
+      if (!sk.stationary) {
+        const target = {
+          x: s.player.x + skOffsets[i].dx,
+          y: s.player.y + skOffsets[i].dy,
+        };
+        const dx = target.x - sk.x;
+        const dy = target.y - sk.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (d > 2) {
+          sk.x += (dx / d) * 4 * dtFactor;
+          sk.y += (dy / d) * 4 * dtFactor;
+        }
       }
 
       sk.attackCooldown -= dtFactor;
@@ -372,6 +705,63 @@ export default function App() {
             damage,
             pierce: s.pierceBonus,
             radius: 4,
+            color: "#2ecc71",
+            owner: "player",
+            hitEnemies: new Set(),
+          });
+        }
+        sk.attackCooldown = sk.attackDelay;
+      }
+    });
+
+    // — Update summoned skeletons with boost effect —
+    if (s.boostActive) {
+      s.boostTimer -= dtFactor / TARGET_FPS; // Convert to seconds
+      if (s.boostTimer <= 0) {
+        // Boost expired - revert changes
+        s.boostActive = false;
+
+        // Revert all summoned skeletons to original stats
+        s.summonedSkeletons.forEach((sk) => {
+          sk.attackDelay = s.originalSummonedDelay;
+        });
+      }
+    }
+
+    s.summonedSkeletons.forEach((sk) => {
+      sk.attackCooldown -= dtFactor;
+      if (sk.attackCooldown <= 0 && s.enemies.length > 0) {
+        let nearest: Enemy | null = null;
+        let nearestDist = Infinity;
+        for (const e of s.enemies) {
+          const ed = dist(sk.x, sk.y, e.x, e.y);
+          if (ed < nearestDist) { nearestDist = ed; nearest = e; }
+        }
+        if (nearest) {
+          const ex = nearest.x - sk.x;
+          const ey = nearest.y - sk.y;
+          const el = Math.sqrt(ex * ex + ey * ey);
+          const spd = 8;
+
+          // Apply damage boost if active (50% more damage)
+          let baseDamage = 1 + s.skeletonDamageBonus;
+          if (s.boostActive) {
+            baseDamage *= 1.5; // 50% damage boost
+          }
+
+          let damage = baseDamage;
+          if (Math.random() < s.critChance) damage *= 2;
+
+          s.projectiles.push({
+            x: sk.x,
+            y: sk.y,
+            vx: (ex / el) * spd,
+            vy: (ey / el) * spd,
+            damage,
+            pierce: s.pierceBonus,
+            radius: 4,
+            color: s.boostActive ? "#e67e22" : "#95a5a6", // Orange color when boosted
+            owner: "player",
             hitEnemies: new Set(),
           });
         }
@@ -391,24 +781,42 @@ export default function App() {
         continue;
       }
 
-      // Hit enemies
       let shouldRemove = false;
-      for (let j = s.enemies.length - 1; j >= 0; j--) {
-        const e = s.enemies[j];
-        if (p.hitEnemies.has(e.id)) continue;
-        if (circlesOverlap(p.x, p.y, p.radius, e.x, e.y, e.radius)) {
-          p.hitEnemies.add(e.id);
-          e.hp -= p.damage;
-          if (p.pierce <= 0 || p.hitEnemies.size > p.pierce) {
-            shouldRemove = true;
+      if (p.owner === "player") {
+        for (let j = s.enemies.length - 1; j >= 0; j--) {
+          const e = s.enemies[j];
+          if (p.hitEnemies.has(e.id)) continue;
+          if (circlesOverlap(p.x, p.y, p.radius, e.x, e.y, e.radius)) {
+            p.hitEnemies.add(e.id);
+            e.hp -= p.damage;
+            if (p.pierce <= 0 || p.hitEnemies.size > p.pierce) {
+              shouldRemove = true;
+            }
+            if (e.hp <= 0) {
+              s.xpOrbs.push({ x: e.x, y: e.y, value: e.xp, radius: 5 });
+              s.enemies.splice(j, 1);
+              s.kills++;
+              s.killsForLeech++;
+              s.player.mana = Math.min(s.player.maxMana, s.player.mana + 5);
+            }
+            if (shouldRemove) break;
           }
-          if (e.hp <= 0) {
-            s.xpOrbs.push({ x: e.x, y: e.y, value: e.xp, radius: 5 });
-            s.enemies.splice(j, 1);
-            s.kills++;
-            s.killsForLeech++;
+        }
+      } else {
+        if (s.player.invincibleFrames <= 0 && circlesOverlap(p.x, p.y, p.radius, s.player.x, s.player.y, s.player.radius)) {
+          s.player.hp -= p.damage;
+          s.player.invincibleFrames = 30;
+          shouldRemove = true;
+          if (s.player.hp <= 0) {
+            s.player.hp = 0;
+            s.gameOver = true;
+            const hs = Math.max(highScoreRef.current, Math.floor(s.timer));
+            highScoreRef.current = hs;
+            localStorage.setItem("necro_highscore", hs.toString());
+            setHighScore(hs);
+            setFinalTime(Math.floor(s.timer));
+            setScreen("gameover");
           }
-          if (shouldRemove) break;
         }
       }
       if (shouldRemove) s.projectiles.splice(i, 1);
@@ -424,6 +832,7 @@ export default function App() {
             s.xpOrbs.push({ x: e.x, y: e.y, value: e.xp, radius: 5 });
             s.kills++;
             s.killsForLeech++;
+            s.player.mana = Math.min(s.player.maxMana, s.player.mana + 10);
           }
         }
       }
@@ -467,7 +876,6 @@ export default function App() {
         }
       }
 
-      // Player-enemy collision
       if (s.player.invincibleFrames <= 0 && circlesOverlap(s.player.x, s.player.y, s.player.radius, e.x, e.y, e.radius)) {
         s.player.hp -= 1;
         s.player.invincibleFrames = 30;
@@ -485,6 +893,42 @@ export default function App() {
           setHighScore(hs);
           setFinalTime(Math.floor(s.timer));
           setScreen("gameover");
+        }
+      }
+
+      // Slime multiplication
+      if (e.type === "slime" && e.multiplyCooldown !== undefined && e.multiplyQuantity && e.multiplyFrequency) {
+        e.multiplyCooldown -= dtFactor / TARGET_FPS; // since dtFactor is per frame, divide by TARGET_FPS to get seconds
+        if (e.multiplyCooldown <= 0) {
+          for (let i = 0; i < e.multiplyQuantity; i++) {
+            const newSlime = spawnEnemy(s);
+            newSlime.x = e.x + (Math.random() - 0.5) * 20; // slight offset
+            newSlime.y = e.y + (Math.random() - 0.5) * 20;
+            s.enemies.push(newSlime);
+          }
+          e.multiplyCooldown = e.multiplyFrequency * TARGET_FPS; // reset cooldown
+        }
+      }
+
+      if (e.projectileConfig) {
+        e.attackCooldown -= dtFactor;
+        if (e.attackCooldown <= 0) {
+          const px = s.player.x - e.x;
+          const py = s.player.y - e.y;
+          const plen = Math.sqrt(px * px + py * py) || 1;
+          s.projectiles.push({
+            x: e.x,
+            y: e.y,
+            vx: (px / plen) * e.projectileConfig.speed,
+            vy: (py / plen) * e.projectileConfig.speed,
+            damage: e.projectileConfig.damage,
+            pierce: 0,
+            radius: e.projectileConfig.radius,
+            color: e.projectileConfig.color,
+            owner: "enemy",
+            hitEnemies: new Set(),
+          });
+          e.attackCooldown = e.attackDelay;
         }
       }
     }
@@ -559,8 +1003,32 @@ export default function App() {
 
     // Enemies
     for (const e of s.enemies) {
-      const colors = { zombie: "#27ae60", bat: "#8e44ad", ghost: "rgba(180,180,255,0.7)", vampire: "#c0392b" };
-      const strokeColors = { zombie: "#2ecc71", bat: "#9b59b6", ghost: "rgba(200,200,255,0.9)", vampire: "#e74c3c" };
+      const colors = {
+        zombie: "#27ae60",
+        bat: "#8e44ad",
+        ghost: "rgba(180,180,255,0.7)",
+        vampire: "#c0392b",
+        silverfish: "#f1c40f",
+        wizard: "#cf2577",
+        slime: "#1e8449",
+        phantom: "#7f8c8d",
+        revenant: "#131357",
+        giant: "#653135",
+        dragon: "#e40b30",
+      };
+      const strokeColors = {
+        zombie: "#2ecc71",
+        bat: "#9b59b6",
+        ghost: "rgba(200,200,255,0.9)",
+        vampire: "#e74c3c",
+        silverfish: "#f39c12",
+        wizard: "#cf2577",
+        slime: "#27ae60",
+        phantom: "#95a5a6",
+        revenant: "#111163",
+        giant: "#7e3d40",
+        dragon: "#e628a0",
+      };
       ctx.fillStyle = colors[e.type];
       ctx.strokeStyle = strokeColors[e.type];
       ctx.lineWidth = 2;
@@ -585,15 +1053,15 @@ export default function App() {
     // Projectiles
     for (const p of s.projectiles) {
       ctx.shadowBlur = 12;
-      ctx.shadowColor = "#2ecc71";
-      ctx.fillStyle = "#2ecc71";
+      ctx.shadowColor = p.color;
+      ctx.fillStyle = p.color;
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
       ctx.fill();
       ctx.shadowBlur = 0;
     }
 
-    // Skeletons
+    // Normal skeletons
     for (const sk of s.skeletons) {
       ctx.shadowBlur = 8;
       ctx.shadowColor = "#95a5a6";
@@ -607,6 +1075,25 @@ export default function App() {
       ctx.stroke();
       // Eyes
       ctx.fillStyle = "#2c3e50";
+      ctx.beginPath();
+      ctx.arc(sk.x - 3, sk.y - 2, 2, 0, Math.PI * 2);
+      ctx.arc(sk.x + 3, sk.y - 2, 2, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+
+    // Summoned skeletons
+    for (const sk of s.summonedSkeletons) {
+      ctx.shadowBlur = 8;
+      ctx.shadowColor = s.boostActive ? "#e67e22" : "#2c3e50";  
+      ctx.fillStyle = s.boostActive ? "#d35400" : "#7f8c8d";     
+      ctx.strokeStyle = s.boostActive ? "#e67e22" : "#34495e";
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(sk.x, sk.y, 10, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+      ctx.fillStyle = "#ecf0f1";
       ctx.beginPath();
       ctx.arc(sk.x - 3, sk.y - 2, 2, 0, Math.PI * 2);
       ctx.arc(sk.x + 3, sk.y - 2, 2, 0, Math.PI * 2);
@@ -650,7 +1137,7 @@ export default function App() {
 
     s.frameCount++;
     rafRef.current = requestAnimationFrame(gameLoop);
-  }, [triggerLevelUp]);
+  }, [triggerLevelUp, abilities]);
 
   function drawHUD(ctx: CanvasRenderingContext2D, s: GameState) {
     ctx.font = "13px 'Courier New', monospace";
@@ -662,7 +1149,7 @@ export default function App() {
     // Panel bg
     ctx.fillStyle = "rgba(0,0,0,0.65)";
     ctx.beginPath();
-    ctx.roundRect(padX - 6, padY - 6, 200, 100, 6);
+    ctx.roundRect(padX - 6, padY - 6, 200, 120, 6);
     ctx.fill();
 
     // HP bar
@@ -681,27 +1168,43 @@ export default function App() {
     ctx.font = "10px 'Courier New', monospace";
     ctx.fillText(`${s.player.hp}/${s.player.maxHp}`, padX + 33, padY + 13);
 
+    // Mana bar
+    ctx.fillStyle = "#3498db";
+    ctx.font = "bold 12px 'Courier New', monospace";
+    ctx.fillText("MP", padX, padY + 34);
+    const manaBarW = 140;
+    ctx.fillStyle = "#2c2c2c";
+    ctx.fillRect(padX + 28, padY + 23, manaBarW, 12);
+    ctx.fillStyle = "#3498db";
+    ctx.fillRect(padX + 28, padY + 23, manaBarW * (s.player.mana / s.player.maxMana), 12);
+    ctx.strokeStyle = "#7f8c8d";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(padX + 28, padY + 23, manaBarW, 12);
+    ctx.fillStyle = "#ecf0f1";
+    ctx.font = "10px 'Courier New', monospace";
+    ctx.fillText(`${s.player.mana}/${s.player.maxMana}`, padX + 33, padY + 33);
+
     // Timer
     ctx.fillStyle = "#2ecc71";
     ctx.font = "bold 13px 'Courier New', monospace";
-    ctx.fillText(`TIME: ${formatTime(s.timer)}`, padX, padY + 38);
+    ctx.fillText(`TIME: ${formatTime(s.timer)}`, padX, padY + 58);
 
     // Level
     ctx.fillStyle = "#9b59b6";
-    ctx.fillText(`LVL: ${s.level}`, padX, padY + 56);
+    ctx.fillText(`LVL: ${s.level}`, padX, padY + 76);
 
     // XP bar
     ctx.fillStyle = "#f39c12";
     ctx.font = "bold 12px 'Courier New', monospace";
-    ctx.fillText("XP", padX, padY + 74);
+    ctx.fillText("XP", padX, padY + 94);
     const xpBarW = 140;
     ctx.fillStyle = "#2c2c2c";
-    ctx.fillRect(padX + 28, padY + 63, xpBarW, 10);
+    ctx.fillRect(padX + 28, padY + 83, xpBarW, 10);
     ctx.fillStyle = "#f39c12";
-    ctx.fillRect(padX + 28, padY + 63, xpBarW * Math.min(1, s.xp / s.xpToNext), 10);
+    ctx.fillRect(padX + 28, padY + 83, xpBarW * Math.min(1, s.xp / s.xpToNext), 10);
     ctx.strokeStyle = "#7f8c8d";
     ctx.lineWidth = 1;
-    ctx.strokeRect(padX + 28, padY + 63, xpBarW, 10);
+    ctx.strokeRect(padX + 28, padY + 83, xpBarW, 10);
 
     // Top-right kills
     ctx.textAlign = "right";
@@ -709,6 +1212,12 @@ export default function App() {
     ctx.font = "bold 12px 'Courier New', monospace";
     ctx.fillText(`KILLS: ${s.kills}`, CANVAS_WIDTH - 12, padY + 18);
     ctx.fillText(`SKELETONS: ${s.skeletons.length}`, CANVAS_WIDTH - 12, padY + 38);
+    ctx.fillText(`SUMMONED: ${s.summonedSkeletons.length}`, CANVAS_WIDTH - 12, padY + 56);
+    if (s.boostActive) {
+      ctx.fillStyle = "#e67e22";
+      ctx.font = "bold 12px 'Courier New', monospace";
+      ctx.fillText(`BOOST: ${s.boostTimer.toFixed(1)}s`, CANVAS_WIDTH - 12, padY + 76);
+    }
   }
 
   const startGame = useCallback(() => {
@@ -717,6 +1226,7 @@ export default function App() {
     keysRef.current.clear();
     setScreen("playing");
     setFinalTime(0);
+    setAbilities([]);
   }, []);
 
   // Start game loop when screen is playing
@@ -818,6 +1328,13 @@ export default function App() {
             </div>
           </div>
         )}
+      </div>
+      <div className="hot-bar">
+        {HOTBAR_LABELS.map((slot, index) => (
+          <div className="hot-bar-slot" key={slot}>
+            {ABILITY_LABELS[abilities[index]] ?? slot}
+          </div>
+        ))}
       </div>
     </div>
   );
